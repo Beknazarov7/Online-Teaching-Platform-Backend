@@ -1,0 +1,231 @@
+### -----------------------------------------------------------------
+### Online Teaching Platform — manual API test script
+###
+### How to use:
+###   1. Make sure the Django server is running: `python manage.py runserver`
+###   2. Make sure the Celery worker is running: `celery -A backend worker -l info`
+###   3. Click "Send Request" above each block (it appears between the lines)
+###   4. Run blocks in order — later blocks reuse tokens/ids from earlier ones
+###
+### Tip: the `# @name xyz` comment names a request; later requests can read
+### its response with {{xyz.response.body.<field>}}.
+### -----------------------------------------------------------------
+
+@base = http://localhost:8000/api
+
+### -----------------------------------------------------------------
+### AUTH — log in as student and as teacher
+### -----------------------------------------------------------------
+
+### Log in as student1 -> captures access token as studentLogin.response.body.access
+# @name studentLogin
+POST {{base}}/auth/login/
+Content-Type: application/json
+
+{
+  "username": "student1",
+  "password": "student123123"
+}
+
+### Log in as teacher1
+# @name teacherLogin
+POST {{base}}/auth/login/
+Content-Type: application/json
+
+{
+  "username": "teacher1",
+  "password": "teacher123"
+}
+
+### Convenience aliases — these resolve every time you send a request below
+@studentToken = {{studentLogin.response.body.access}}
+@teacherToken = {{teacherLogin.response.body.access}}
+
+
+### -----------------------------------------------------------------
+### USERS — current user
+### -----------------------------------------------------------------
+
+### Who am I (student)?
+GET {{base}}/users/me/
+Authorization: Bearer {{studentToken}}
+
+### Who am I (teacher)?
+GET {{base}}/users/me/
+Authorization: Bearer {{teacherToken}}
+
+
+### -----------------------------------------------------------------
+### TEACHER — slot CRUD
+### -----------------------------------------------------------------
+
+### Create a slot (teacher) — change the dates to be in the future!
+# @name newSlot
+POST {{base}}/teacher/slots/
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "start_time": "2026-05-10T18:00:00Z",
+  "end_time":   "2026-05-10T19:00:00Z"
+}
+
+### Capture the slot id for later requests
+@slotId = {{newSlot.response.body.id}}
+
+### List teacher's own slots
+GET {{base}}/teacher/slots/
+Authorization: Bearer {{teacherToken}}
+
+### Edit the slot (only allowed while is_booked = false)
+PATCH {{base}}/teacher/slots/{{slotId}}/
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "end_time": "2026-05-10T19:30:00Z"
+}
+
+
+### -----------------------------------------------------------------
+### STUDENT — see open slots, then book one
+### -----------------------------------------------------------------
+
+### Student lists open slots
+GET {{base}}/slots/
+Authorization: Bearer {{studentToken}}
+
+### Student books the slot we just created
+# @name booking
+POST {{base}}/lessons/
+Authorization: Bearer {{studentToken}}
+Content-Type: application/json
+
+{
+  "slot": {{slotId}}
+}
+
+### Capture the lesson id for the rest of the flow
+@lessonId = {{booking.response.body.id}}
+
+### Student lists their lessons (should show 1 PENDING)
+GET {{base}}/lessons/
+Authorization: Bearer {{studentToken}}
+
+
+### -----------------------------------------------------------------
+### TEACHER — confirm the booking (queues Celery reminders)
+### -----------------------------------------------------------------
+
+### Confirm — watch your Celery terminal: it should log task scheduling
+POST {{base}}/lessons/{{lessonId}}/confirm/
+Authorization: Bearer {{teacherToken}}
+
+### Teacher lists their lessons (should show 1 CONFIRMED)
+GET {{base}}/lessons/
+Authorization: Bearer {{teacherToken}}
+
+
+### -----------------------------------------------------------------
+### TEACHER — write the post-lesson report → lesson becomes COMPLETED
+### -----------------------------------------------------------------
+
+POST {{base}}/reports/
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "lesson": {{lessonId}},
+  "topic": "Past Simple",
+  "text":  "Good progress on regular verbs. Practice irregular ones for next time."
+}
+
+### Verify student's stats updated (total_lessons + streak should be 1, rank "Starter")
+GET {{base}}/users/me/
+Authorization: Bearer {{studentToken}}
+
+
+### -----------------------------------------------------------------
+### STUDENT — leave a review
+### -----------------------------------------------------------------
+
+POST {{base}}/reviews/
+Authorization: Bearer {{studentToken}}
+Content-Type: application/json
+
+{
+  "lesson": {{lessonId}},
+  "rating": 5,
+  "comment": "Great lesson, very clear explanations."
+}
+
+### Read your own reviews
+GET {{base}}/reviews/
+Authorization: Bearer {{studentToken}}
+
+
+### -----------------------------------------------------------------
+### EDGE CASES — these should FAIL with a sensible error
+### -----------------------------------------------------------------
+
+### Try to book the same slot again — expect 400 "already booked"
+POST {{base}}/lessons/
+Authorization: Bearer {{studentToken}}
+Content-Type: application/json
+
+{
+  "slot": {{slotId}}
+}
+
+### Try to confirm with student token — expect 403
+POST {{base}}/lessons/{{lessonId}}/confirm/
+Authorization: Bearer {{studentToken}}
+
+### Try to write a second report — expect 400 "report already exists"
+POST {{base}}/reports/
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "lesson": {{lessonId}},
+  "topic": "Duplicate",
+  "text": "should fail"
+}
+
+
+### -----------------------------------------------------------------
+### CANCELLATION — create a *new* slot/lesson, then cancel it
+### -----------------------------------------------------------------
+
+### Teacher creates a slot far in the future (free cancellation)
+# @name slotForCancel
+POST {{base}}/teacher/slots/
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "start_time": "2026-12-20T18:00:00Z",
+  "end_time":   "2026-12-20T19:00:00Z"
+}
+
+@slotForCancelId = {{slotForCancel.response.body.id}}
+
+### Student books it
+# @name lessonForCancel
+POST {{base}}/lessons/
+Authorization: Bearer {{studentToken}}
+Content-Type: application/json
+
+{
+  "slot": {{slotForCancelId}}
+}
+
+@lessonForCancelId = {{lessonForCancel.response.body.id}}
+
+### Cancel — far in the future, so cancellation_charged should be false
+POST {{base}}/lessons/{{lessonForCancelId}}/cancel/
+Authorization: Bearer {{studentToken}}
+
+### Verify the slot is back on the open list
+GET {{base}}/slots/
+Authorization: Bearer {{studentToken}}
