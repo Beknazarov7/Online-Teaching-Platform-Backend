@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from lessons.models import Lesson
+from lessons.serializers import LessonSerializer
 from reports.models import LessonReport, Review
 
 from .models import User
@@ -198,3 +199,43 @@ class ActivityView(APIView):
 
         items.sort(key=lambda x: x["at"], reverse=True)
         return Response(items[:limit])
+
+
+# --- Schedule (all lessons across the platform) -------------------------
+
+class AdminLessonListView(generics.ListAPIView):
+    """
+    Platform-wide list of lessons for the admin Schedule page.
+
+    Query params (all optional):
+        ?status=pending|confirmed|completed|cancelled|declined
+        ?teacher=<user_id>
+        ?student=<user_id>
+        ?date_from=YYYY-MM-DD        inclusive lower bound on scheduled_at
+        ?date_to=YYYY-MM-DD          inclusive upper bound (treats date as end-of-day)
+    """
+    permission_classes = (permissions.IsAuthenticated, IsAdminRole)
+    serializer_class = LessonSerializer
+
+    def get_queryset(self):
+        qs = Lesson.objects.select_related("student", "teacher").order_by("scheduled_at")
+
+        params = self.request.query_params
+        status_v = params.get("status")
+        if status_v:
+            qs = qs.filter(status=status_v)
+        teacher_id = params.get("teacher")
+        if teacher_id:
+            qs = qs.filter(teacher_id=teacher_id)
+        student_id = params.get("student")
+        if student_id:
+            qs = qs.filter(student_id=student_id)
+
+        date_from = params.get("date_from")
+        if date_from:
+            qs = qs.filter(scheduled_at__date__gte=date_from)
+        date_to = params.get("date_to")
+        if date_to:
+            qs = qs.filter(scheduled_at__date__lte=date_to)
+
+        return qs

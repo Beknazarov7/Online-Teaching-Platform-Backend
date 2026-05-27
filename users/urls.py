@@ -12,6 +12,7 @@ from .admin_views import (
     UserListCreateView,
     UserDetailView,
     ActivityView,
+    AdminLessonListView,
 )
 
 urlpatterns = [
@@ -30,4 +31,5 @@ urlpatterns = [
     path("admin/users/",          UserListCreateView.as_view(), name="admin-user-list"),
     path("admin/users/<int:pk>/", UserDetailView.as_view(),     name="admin-user-detail"),
     path("admin/activity/",       ActivityView.as_view(),       name="admin-activity"),
+    path("admin/lessons/",        AdminLessonListView.as_view(), name="admin-lesson-list"),
 ]
