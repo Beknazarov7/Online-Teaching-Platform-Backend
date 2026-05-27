@@ -16,7 +16,8 @@ Endpoints:
 """
 from datetime import timedelta
 
-from django.db.models import Count, Q
+from django.db.models import Avg, Count, Q
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.response import Response
@@ -239,3 +240,169 @@ class AdminLessonListView(generics.ListAPIView):
             qs = qs.filter(scheduled_at__date__lte=date_to)
 
         return qs
+
+
+# --- Progress / analytics ----------------------------------------------
+
+class AdminProgressView(APIView):
+    """
+    Platform-wide analytics for the admin Progress page.
+
+    All metrics are computed in a single request — the dataset is small
+    enough that grouping/aggregating in Postgres is faster than splitting
+    this across multiple round trips.
+
+    Response shape:
+        {
+            "totals": {
+                "lessons": int,
+                "completed": int,
+                "cancelled": int,
+                "completion_rate": int,   # percent
+                "avg_rating": float | None,
+                "active_students": int,    # students with >=1 lesson in last 30d
+            },
+            "by_status": { "<status>": count, ... },
+            "daily": [ { "date": "YYYY-MM-DD", "completed": int, "cancelled": int, "other": int }, ... ],   # last 30 days
+            "top_teachers": [ { "id", "username", "completed", "avg_rating" }, ... ],
+            "top_students": [ { "id", "username", "completed", "streak" }, ... ],
+            "recent_reviews": [ { "rating", "comment", "student", "teacher", "at" }, ... ],
+        }
+    """
+    permission_classes = (permissions.IsAuthenticated, IsAdminRole)
+
+    def get(self, request):
+        now = timezone.now()
+        month_ago = now - timedelta(days=30)
+
+        # --- Totals ---
+        lessons_total   = Lesson.objects.count()
+        completed_total = Lesson.objects.filter(status=Lesson.Status.COMPLETED).count()
+        cancelled_total = Lesson.objects.filter(status=Lesson.Status.CANCELLED).count()
+        # Completion rate is over lessons that have reached a terminal state —
+        # excluding pending/confirmed avoids dragging the number down with
+        # bookings that simply haven't happened yet.
+        terminal = completed_total + cancelled_total + Lesson.objects.filter(
+            status=Lesson.Status.DECLINED
+        ).count()
+        completion_rate = round(completed_total / terminal * 100) if terminal else 0
+
+        avg_rating = Review.objects.aggregate(v=Avg("rating"))["v"]
+        avg_rating = round(avg_rating, 2) if avg_rating is not None else None
+
+        active_students = (
+            Lesson.objects
+            .filter(scheduled_at__gte=month_ago)
+            .values("student_id").distinct().count()
+        )
+
+        # --- By status ---
+        by_status_rows = (
+            Lesson.objects.values("status").annotate(n=Count("id"))
+        )
+        by_status = {row["status"]: row["n"] for row in by_status_rows}
+
+        # --- Daily series (last 30 days) ---
+        daily_rows = (
+            Lesson.objects
+            .filter(scheduled_at__gte=month_ago)
+            .annotate(d=TruncDate("scheduled_at"))
+            .values("d", "status")
+            .annotate(n=Count("id"))
+        )
+        daily_map = {}
+        for row in daily_rows:
+            key = row["d"].isoformat()
+            bucket = daily_map.setdefault(key, {"date": key, "completed": 0, "cancelled": 0, "other": 0})
+            if row["status"] == Lesson.Status.COMPLETED:
+                bucket["completed"] += row["n"]
+            elif row["status"] == Lesson.Status.CANCELLED:
+                bucket["cancelled"] += row["n"]
+            else:
+                bucket["other"] += row["n"]
+        # Fill in zero-days so the chart x-axis is continuous.
+        daily = []
+        for i in range(29, -1, -1):
+            d = (now - timedelta(days=i)).date().isoformat()
+            daily.append(daily_map.get(d, {"date": d, "completed": 0, "cancelled": 0, "other": 0}))
+
+        # --- Top teachers ---
+        teacher_rows = (
+            User.objects
+            .filter(role=User.Role.TEACHER)
+            .annotate(
+                completed=Count(
+                    "teacher_lessons",
+                    filter=Q(teacher_lessons__status=Lesson.Status.COMPLETED),
+                ),
+                avg_rating=Avg("teacher_lessons__review__rating"),
+            )
+            .filter(completed__gt=0)
+            .order_by("-completed", "-avg_rating")[:5]
+        )
+        top_teachers = [
+            {
+                "id": t.id,
+                "username": t.username,
+                "completed": t.completed,
+                "avg_rating": round(t.avg_rating, 2) if t.avg_rating else None,
+            }
+            for t in teacher_rows
+        ]
+
+        # --- Top students ---
+        student_rows = (
+            User.objects
+            .filter(role=User.Role.STUDENT)
+            .select_related("student_profile")
+            .annotate(
+                completed=Count(
+                    "student_lessons",
+                    filter=Q(student_lessons__status=Lesson.Status.COMPLETED),
+                ),
+            )
+            .filter(completed__gt=0)
+            .order_by("-completed")[:5]
+        )
+        top_students = [
+            {
+                "id": s.id,
+                "username": s.username,
+                "completed": s.completed,
+                "streak": getattr(getattr(s, "student_profile", None), "streak", 0),
+            }
+            for s in student_rows
+        ]
+
+        # --- Recent reviews ---
+        review_rows = (
+            Review.objects
+            .select_related("lesson__student", "lesson__teacher")
+            .order_by("-created_at")[:5]
+        )
+        recent_reviews = [
+            {
+                "rating": r.rating,
+                "comment": r.comment or "",
+                "student": r.lesson.student.username,
+                "teacher": r.lesson.teacher.username,
+                "at": r.created_at,
+            }
+            for r in review_rows
+        ]
+
+        return Response({
+            "totals": {
+                "lessons":         lessons_total,
+                "completed":       completed_total,
+                "cancelled":       cancelled_total,
+                "completion_rate": completion_rate,
+                "avg_rating":      avg_rating,
+                "active_students": active_students,
+            },
+            "by_status":      by_status,
+            "daily":          daily,
+            "top_teachers":   top_teachers,
+            "top_students":   top_students,
+            "recent_reviews": recent_reviews,
+        })

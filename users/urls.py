@@ -6,13 +6,14 @@ become /api/auth/register/ and /api/users/me/.
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .views import RegisterView, MeView
+from .views import RegisterView, MeView, ChangePasswordView
 from .admin_views import (
     StatsView,
     UserListCreateView,
     UserDetailView,
     ActivityView,
     AdminLessonListView,
+    AdminProgressView,
 )
 
 urlpatterns = [
@@ -24,7 +25,8 @@ urlpatterns = [
     path("auth/register/", RegisterView.as_view(),        name="register"),
 
     # Current user
-    path("users/me/", MeView.as_view(), name="me"),
+    path("users/me/",                 MeView.as_view(),             name="me"),
+    path("users/me/change-password/", ChangePasswordView.as_view(), name="me-change-password"),
 
     # Admin
     path("admin/stats/",          StatsView.as_view(),          name="admin-stats"),
@@ -32,4 +34,5 @@ urlpatterns = [
     path("admin/users/<int:pk>/", UserDetailView.as_view(),     name="admin-user-detail"),
     path("admin/activity/",       ActivityView.as_view(),       name="admin-activity"),
     path("admin/lessons/",        AdminLessonListView.as_view(), name="admin-lesson-list"),
+    path("admin/progress/",       AdminProgressView.as_view(),   name="admin-progress"),
 ]
