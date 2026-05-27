@@ -8,3 +8,5 @@ psycopg2-binary==2.9.12
 python-dotenv==1.2.2
 aiogram==3.27.0
 requests==2.33.1
+gunicorn==23.0.0
+whitenoise==6.9.0
