@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import timedelta
 import os
+import ssl
 from dotenv import load_dotenv
 
 # BASE_DIR points to the `backend/` folder (the one that contains manage.py).
@@ -32,6 +33,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -108,10 +110,16 @@ CELERY_TASK_TRACK_STARTED = True
 # to True via env var to bypass the broker entirely. Leave False normally.
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_EAGER", "False") == "True"
 
+# Required for Upstash Redis TLS (rediss://) connections
+if os.getenv("CELERY_BROKER_URL", "").startswith("rediss://"):
+    CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+    CELERY_REDIS_BACKEND_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
